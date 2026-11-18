@@ -1,0 +1,210 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { Loader2, PartyPopper, ArrowRight, Target, Clock, Trophy, Download, Trash2 } from "lucide-react";
+import { api, deleteSession, generateLlmReport } from "@/lib/api";
+import { getAuthToken, clearActiveSessionId } from "@/lib/store";
+import { streamChat } from "@/lib/api";
+
+export default function ResultPage() {
+  const params = useParams();
+  const router = useRouter();
+  const sessionId = params.id as string;
+  const [session, setSession] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  
+  const [isGeneratingNew, setIsGeneratingNew] = useState(false);
+  const [streamProgress, setStreamProgress] = useState<any>({});
+  const [isExporting, setIsExporting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  useEffect(() => {
+    if (!getAuthToken()) {
+      router.push("/login");
+      return;
+    }
+    
+    const fetchResult = async () => {
+      try {
+        const res = await api.get(`/chat/session/${sessionId}`);
+        setSession(res.data);
+      } catch (err) {
+        console.error("Failed to load result", err);
+        router.push("/dashboard");
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchResult();
+  }, [sessionId, router]);
+
+  const handleNewSession = () => {
+    router.push(`/generate?company=${encodeURIComponent(session?.company || "Unknown")}&role=${encodeURIComponent(session?.role || "SDE-1")}&timeline=${session?.timeline_days || 14}`);
+  };
+
+  const handleDashboard = () => {
+    router.push("/dashboard");
+  };
+
+  const handleExport = async () => {
+    if (!sessionId) return;
+    setIsExporting(true);
+    try {
+      const reportResponse = await generateLlmReport(sessionId);
+      
+      // Dynamic import to avoid SSR errors
+      const html2pdf = (await import('html2pdf.js')).default;
+      
+      const container = document.createElement("div");
+      container.innerHTML = reportResponse.html;
+      container.style.width = "794px";
+      container.style.backgroundColor = "#ffffff";
+      
+      // Do NOT append to document.body! html2pdf.js will create an isolated iframe.
+      // This prevents the blank page bugs caused by html2canvas interacting with the Next.js DOM.
+
+      const opt = {
+        // IMPORTANT: margin MUST be 0! 
+        // If margin > 0, html2pdf's pagebreak algorithm calculates the wrong page height
+        // and pushes elements to the bottom of the page instead of the next page.
+        margin:       0,
+        filename:     `PrepAgent-Report-${session?.company || "Session"}.pdf`,
+        image:        { type: 'jpeg', quality: 1.0 },
+        html2canvas:  { scale: 2, useCORS: true, width: 794, windowWidth: 794 },
+        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        // Use css mode so it respects our .page-break class and page-break-inside rules
+        pagebreak:    { 
+          mode: 'css', 
+          avoid: ['.qa-code', '.growth-card', '.metric-row', '.callout', '.transcript-turn', '.plan-block'] 
+        }
+      };
+      
+      await html2pdf().set(opt).from(container).save();
+
+    } catch (err: any) {
+      alert(err?.message || "Unable to export this session");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!sessionId) return;
+    const confirmed = window.confirm("Delete this session and all of its chat history? This cannot be undone.");
+    if (!confirmed) return;
+
+    setIsDeleting(true);
+    try {
+      await deleteSession(sessionId);
+      clearActiveSessionId();
+      router.push("/dashboard");
+    } catch (err: any) {
+      alert(err?.message || "Unable to delete this session");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  if (loading || !session) {
+    return (
+      <div className="flex items-center justify-center h-screen w-full bg-bg0">
+        <Loader2 className="animate-spin text-accent" size={32} />
+      </div>
+    );
+  }
+
+  // Format time taken
+  const timeTaken = session.time_taken || 0;
+  const mins = Math.floor(timeTaken / 60);
+  const secs = timeTaken % 60;
+  const timeStr = `${mins > 0 ? `${mins}m ` : ''}${secs}s`;
+
+
+
+  return (
+    <div className="flex flex-col items-center min-h-screen w-full bg-bg0 py-16 px-8">
+      <div className="max-w-3xl w-full animate-fade-in flex flex-col items-center">
+        <div className="w-24 h-24 bg-accent/10 rounded-full flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(6,182,212,0.2)]">
+          <PartyPopper size={40} className="text-accent" />
+        </div>
+        
+        <h1 className="text-4xl font-bold text-white mb-2 tracking-tight text-center">Mock Test Completed!</h1>
+        <p className="text-[#a5a0c4] mb-12 text-center text-lg">
+          You've successfully finished your {session.company} preparation test.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full mb-8">
+          {/* Overall Score */}
+          <div className="bg-[#101016] border border-[#232338] rounded-xl p-8 flex flex-col items-center justify-center min-h-[140px] shadow-lg">
+            <div className="text-[#8a8a9e] text-xs font-bold uppercase tracking-[0.2em] mb-4">Overall Score</div>
+            <div className="flex items-baseline gap-1">
+              <span className="text-5xl font-black text-white">{(session.final_score ?? session.readiness_score ?? 10).toFixed(0)}</span>
+              <span className="text-xl font-medium text-[#8a8a9e]">/100</span>
+            </div>
+          </div>
+
+          {/* Accuracy */}
+          <div className="bg-[#101016] border border-[#232338] rounded-xl p-8 flex flex-col items-center justify-center min-h-[140px] shadow-lg">
+            <div className="text-[#8a8a9e] text-xs font-bold uppercase tracking-[0.2em] mb-4">Accuracy %</div>
+            <div className="flex items-baseline gap-1">
+              <span className="text-5xl font-black text-white">{(session.accuracy ?? session.readiness_score ?? 100).toFixed(0)}</span>
+              <span className="text-3xl font-medium text-[#8a8a9e]">%</span>
+            </div>
+          </div>
+
+          {/* Time Taken */}
+          <div className="bg-[#101016] border border-[#232338] rounded-xl p-8 flex flex-col items-center justify-center min-h-[140px] shadow-lg">
+            <div className="text-[#8a8a9e] text-xs font-bold uppercase tracking-[0.2em] mb-4">Time Taken</div>
+            <div className="flex items-baseline gap-1">
+              <span className="text-5xl font-black text-white">{mins > 0 ? `${mins}` : '0'}</span>
+              <span className="text-xl font-medium text-[#8a8a9e] mr-1">m</span>
+              <span className="text-5xl font-black text-white">{secs}</span>
+              <span className="text-xl font-medium text-[#8a8a9e]">s</span>
+            </div>
+          </div>
+        </div>
+
+
+
+        <div className="flex flex-col sm:flex-row items-center gap-4">
+          <button 
+            onClick={handleDashboard}
+            className="bg-[#2d2c41] hover:bg-[#3f3e58] text-white font-bold px-8 py-4 rounded-xl transition-all shadow-sm w-full sm:w-auto text-center h-[72px]"
+          >
+            Go to Dashboard
+          </button>
+          <button 
+            onClick={handleNewSession}
+            className="bg-accent hover:bg-accent/90 text-[#060609] font-bold px-8 py-4 rounded-xl transition-all shadow-[0_0_20px_rgba(6,182,212,0.3)] flex items-center justify-center gap-2 w-full sm:w-auto h-[72px]"
+          >
+            Start New Mock Session <ArrowRight size={18} />
+          </button>
+          <button
+            onClick={handleExport}
+            disabled={isExporting}
+            className="bg-[#12121a] hover:bg-[#1b1b27] border border-[#2d2c41] text-white font-bold px-6 py-3 rounded-xl transition-all flex items-center justify-center gap-4 w-full sm:w-auto disabled:opacity-60 min-w-[160px] h-[72px]"
+          >
+            <Download size={16} className="text-[#a5a0c4]" />
+            <div className="flex flex-col text-left leading-tight">
+              <span>{isExporting ? "Exporting..." : "Download"}</span>
+              {!isExporting && <span>Summary</span>}
+            </div>
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={isDeleting}
+            className="bg-[#2a1417] hover:bg-[#3a171c] border border-[#5a1f28] text-[#fca5a5] font-bold px-6 py-3 rounded-xl transition-all flex items-center justify-center gap-4 w-full sm:w-auto disabled:opacity-60 min-w-[160px] h-[72px]"
+          >
+            <Trash2 size={16} className="text-[#fca5a5]" />
+            <div className="flex flex-col text-left leading-tight">
+              <span>{isDeleting ? "Deleting..." : "Delete"}</span>
+              {!isDeleting && <span>Session</span>}
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

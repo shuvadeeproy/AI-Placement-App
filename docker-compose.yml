@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - API_INTERNAL_URL=http://backend:9001
+      - NEXT_PUBLIC_API_URL=http://localhost:9001/api
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - prepagent_net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "9001:9001"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/data:/app/data
+    restart: unless-stopped
+    networks:
+      - prepagent_net
+
+networks:
+  prepagent_net:
+    driver: bridge
